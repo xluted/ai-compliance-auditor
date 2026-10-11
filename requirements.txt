@@ -15,3 +15,4 @@ sentence-transformers==2.7.0
 pywinrm==0.4.3
 pandas==2.2.2
 requests==2.32.2
+pyarrow==15.0.2

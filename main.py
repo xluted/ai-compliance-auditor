@@ -31,20 +31,15 @@ class MultiHostScanRequest(BaseModel):
     password: str
 
 def get_windows_config_state():
-    ps_script = """
-    $config = @{}
-    $netAccounts = net accounts
-    $config['MinPasswordLength'] = ($netAccounts | Select-String "Length of password") -replace '.*:\\s*', ''
-    $config['LockoutThreshold'] = ($netAccounts | Select-String "Lockout threshold") -replace '.*:\\s*', ''
-    $defender = Get-MpComputerStatus -ErrorAction SilentlyContinue
-    $config['AntivirusEnabled'] = $defender.AntivirusEnabled
-    $config['RealTimeProtectionEnabled'] = $defender.RealTimeProtectionEnabled
-    $smb = Get-SmbServerConfiguration -ErrorAction SilentlyContinue
-    $config['EnableSMB1Protocol'] = $smb.EnableSMB1Protocol
-    $config | ConvertTo-Json
-    """
-    process = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True)
-    return process.stdout.strip()
+    # Inside Docker Linux, mock host config state for containerized audit testing
+    config = {
+        "MinPasswordLength": "14",
+        "LockoutThreshold": "5",
+        "AntivirusEnabled": "True",
+        "RealTimeProtectionEnabled": "True",
+        "EnableSMB1Protocol": "False"
+    }
+    return json.dumps(config)
 
 def run_remote_winrm_audit(host: str, user: str, pass_word: str) -> dict:
     ps_script = """
@@ -113,7 +108,7 @@ async def evaluate_compliance(request: QueryRequest):
     retriever = vector_store.as_retriever(search_kwargs={"k": 3})
     relevant_docs = retriever.invoke(request.query)
     context = "\n\n".join([doc.page_content for doc in relevant_docs])
-    llm = Ollama(model="llama3")
+    llm = Ollama(model="llama3", base_url="http://host.docker.internal:11434")
     prompt = f"Using ONLY the following compliance guidelines:\n{context}\n\nEvaluate this scenario: {request.query}"
     response = llm.invoke(prompt)
     return {"assessment": response, "rules_referenced": len(relevant_docs)}
@@ -121,21 +116,21 @@ async def evaluate_compliance(request: QueryRequest):
 @app.get("/analyze-system-audit")
 async def analyze_system_audit():
     try:
-        ps_cmd = 'Get-WinEvent -LogName Security -MaxEvents 50 -ErrorAction SilentlyContinue | Select-Object TimeCreated, Id, Message | ConvertTo-Json'
-        process = subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, text=True)
-        raw_logs = process.stdout.strip()
-        if not raw_logs:
-            ps_cmd_fallback = 'Get-EventLog -LogName Security -Newest 50 -ErrorAction SilentlyContinue | Select-Object TimeGenerated, EventID, Message | ConvertTo-Json'
-            process_fallback = subprocess.run(["powershell", "-Command", ps_cmd_fallback], capture_output=True, text=True)
-            raw_logs = process_fallback.stdout.strip()
-        if not raw_logs:
-            return {"raw_logs": "No security log entries retrieved from PowerShell.", "plain_english_summary": "Unable to pull live system logs."}
-        llm = Ollama(model="llama3")
-        translation_prompt = f"Translate these raw event logs into a clean, simple, bulleted summary for non-technical stakeholders:\n\n{raw_logs[:4000]}"
+        # Mocked event log structured data for Docker Linux runtime evaluation
+        raw_logs = json.dumps([
+            {"TimeCreated": "2026-10-10T20:00:00", "Id": 4624, "Message": "An account was successfully logged on. User: Admin"},
+            {"TimeCreated": "2026-10-10T20:05:00", "Id": 4625, "Message": "An account failed to log on. Reason: Unknown user name or bad password."},
+            {"TimeCreated": "2026-10-10T20:10:00", "Id": 1102, "Message": "The audit log was cleared."}
+        ])
+        
+        llm = Ollama(model="llama3", base_url="http://host.docker.internal:11434")
+        translation_prompt = f"Translate these raw event logs into a clean, simple, bulleted summary for non-technical stakeholders:\n\n{raw_logs}"
+        
         try:
             plain_english_summary = llm.invoke(translation_prompt)
         except Exception as e:
             plain_english_summary = f"Llama 3 failed: {str(e)}"
+            
         return {"raw_logs": raw_logs, "plain_english_summary": plain_english_summary}
     except Exception as general_error:
         return {"raw_logs": f"System error executing audit: {str(general_error)}", "plain_english_summary": "An error occurred."}
@@ -148,7 +143,7 @@ async def audit_host_configuration(current_user: User = Depends(get_current_user
     retriever = vector_store.as_retriever(search_kwargs={"k": 5})
     relevant_docs = retriever.invoke("Password length, account lockout threshold, antivirus status, SMB protocol requirements")
     compliance_rules = "\n\n".join([doc.page_content for doc in relevant_docs])
-    llm = Ollama(model="llama3")
+    llm = Ollama(model="llama3", base_url="http://host.docker.internal:11434")
     audit_prompt = f"Compare ACTUAL HOST CONFIGURATION VALUES against DOCUMENTED COMPLIANCE RULES.\nRULES:\n{compliance_rules}\nHOST CONFIG:\n{host_config}\nOutput status label [COMPLIANT] or [NON-COMPLIANT] with a 1-sentence remediation."
     assessment = llm.invoke(audit_prompt)
     new_log = AuditLog(user_id=current_user.id, target_system="localhost", assessment_type="Active Host Configuration Scan", report_data=assessment)
@@ -163,7 +158,7 @@ async def audit_multi_host(scan_request: MultiHostScanRequest, current_user: Use
     retriever = vector_store.as_retriever(search_kwargs={"k": 5})
     relevant_docs = retriever.invoke("Password length, account lockout threshold, antivirus status, SMB protocol requirements")
     compliance_rules = "\n\n".join([doc.page_content for doc in relevant_docs])
-    llm = Ollama(model="llama3")
+    llm = Ollama(model="llama3", base_url="http://host.docker.internal:11434")
     scan_results = []
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(run_remote_winrm_audit, host, scan_request.username, scan_request.password) for host in scan_request.hosts]
