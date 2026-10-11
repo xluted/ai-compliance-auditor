@@ -1,0 +1,16 @@
+﻿version: '3.8'
+
+services:
+  compliance-auditor:
+    build: .
+    ports:
+      - "8000:8000"
+      - "8501:8501"
+    volumes:
+      - .:/app
+      - sqldata:/app/data
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
+
+volumes:
+  sqldata:
